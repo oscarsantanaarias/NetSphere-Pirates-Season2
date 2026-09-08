@@ -1,0 +1,514 @@
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
+using BlubLib.DotNetty.Handlers.MessageHandling;
+using Netsphere.Network.Data.Game;
+using Netsphere.Network.Message.Game;
+using Netsphere.Shop;
+using NLog;
+using NLog.Fluent;
+using ProudNet.Handlers;
+
+namespace Netsphere.Network.Services
+{
+    internal class ShopService : ProudMessageHandler
+    {
+        // ReSharper disable once InconsistentNaming
+        private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
+
+        [MessageHandler(typeof(CNewShopUpdateCheckReqMessage))]
+        public async Task ShopUpdateCheckHandler(GameSession session, CNewShopUpdateCheckReqMessage message)
+        {
+            var shop = GameServer.Instance.ResourceCache.GetShop();
+            var version = shop.Version;
+
+            // Temporal, para aislar el cuelgue del lobby en Season 2: los blobs
+            // de tienda estan serializados en formato Season 1 y el cliente se
+            // queda esperando al tragarselos. Devolviendole sus propias fechas
+            // cree que esta al dia y no le mandamos ninguno.
+            if (Environment.GetEnvironmentVariable("S2_NO_SHOP") == "1")
+            {
+                Logger.Warn("S2_NO_SHOP activo: no se manda la tienda");
+                await session.SendAsync(new SNewShopUpdateCheckAckMessage
+                {
+                    Date01 = message.Date01,
+                    Date02 = message.Date02,
+                    Date03 = message.Date03,
+                    Date04 = message.Date04,
+                    Unk = 0
+                }).ConfigureAwait(false);
+                return;
+            }
+
+            await session.SendAsync(new SNewShopUpdateCheckAckMessage
+            {
+                Date01 = version,
+                Date02 = version,
+                Date03 = version,
+                Date04 = version,
+                Unk = 0
+            }).ConfigureAwait(false);
+            //session.Send(new SRandomShopInfoAckMessage
+            //{
+            //    Info = new RandomShopDto
+            //    {
+            //        ItemNumbers = new List<ItemNumber> { 2000001, 2000002, 2000003 },
+            //        Effects = new List<uint> { 0, 0, 0 },
+            //        Colors = new List<uint> { 2, 0, 0 },
+            //        PeriodTypes = new List<ItemPeriodType> { ItemPeriodType.Hours, ItemPeriodType.Hours, ItemPeriodType.Hours },
+            //        Periods = new List<ushort> { 2, 4, 10 },
+            //        Unk6 = 10000,
+            //    }
+            //});
+
+            if (message.Date01 == version &&
+                message.Date02 == version &&
+                message.Date03 == version &&
+                message.Date04 == version)
+            {
+                return;
+            }
+
+            #region NewShopPrice
+
+            using (var w = new BinaryWriter(new MemoryStream()))
+            {
+                w.Serialize(shop.Prices.Values.ToArray());
+
+                await session.SendAsync(new SNewShopUpdateInfoAckMessage
+                {
+                    Type = ShopResourceType.NewShopPrice,
+                    Data = w.ToArray(),
+                    Date = version
+                }).ConfigureAwait(false);
+            }
+
+            #endregion
+
+            #region NewShopEffect
+
+            using (var w = new BinaryWriter(new MemoryStream()))
+            {
+                w.Serialize(shop.Effects.Values.ToArray());
+
+                await session.SendAsync(new SNewShopUpdateInfoAckMessage
+                {
+                    Type = ShopResourceType.NewShopEffect,
+                    Data = w.ToArray(),
+                    Date = version
+                }).ConfigureAwait(false);
+            }
+
+            #endregion
+
+            #region NewShopItem
+
+            using (var w = new BinaryWriter(new MemoryStream()))
+            {
+                w.Serialize(shop.Items.Values.ToArray());
+
+                await session.SendAsync(new SNewShopUpdateInfoAckMessage
+                {
+                    Type = ShopResourceType.NewShopItem,
+                    Data = w.ToArray(),
+                    Date = version
+                }).ConfigureAwait(false);
+            }
+
+            #endregion
+
+            // ToDo
+            using (var w = new BinaryWriter(new MemoryStream()))
+            {
+                w.Write(0);
+
+                await session.SendAsync(new SNewShopUpdateInfoAckMessage
+                {
+                    Type = ShopResourceType.NewShopUniqueItem,
+                    Data = w.ToArray(),
+                    Date = version
+                }).ConfigureAwait(false);
+            }
+
+            using (var w = new BinaryWriter(new MemoryStream()))
+            {
+                w.Write(new byte[200]);
+
+                await session.SendAsync(new SNewShopUpdateInfoAckMessage
+                {
+                    Type = (ShopResourceType)16,
+                    Data = w.ToArray(),
+                    Date = version
+                }).ConfigureAwait(false);
+            }
+        }
+
+        [MessageHandler(typeof(CLicensedReqMessage))]
+        public void LicensedHandler(GameSession session, CLicensedReqMessage message)
+        {
+            try
+            {
+                session.Player.LicenseManager.Acquire(message.License);
+            }
+            catch (LicenseNotFoundException ex)
+            {
+                Logger.Error()
+                    .Account(session)
+                    .Exception(ex)
+                    .Write();
+            }
+        }
+
+        [MessageHandler(typeof(CExerciseLicenceReqMessage))]
+        public void ExerciseLicenseHandler(GameSession session, CExerciseLicenceReqMessage message)
+        {
+            try
+            {
+                session.Player.LicenseManager.Acquire(message.License);
+            }
+            catch (LicenseException ex)
+            {
+                Logger.Error()
+                    .Account(session)
+                    .Exception(ex)
+                    .Write();
+            }
+        }
+
+        private const int MaxBasketSize = 24;
+
+        [MessageHandler(typeof(CBuyItemReqMessage))]
+        public async Task BuyItemHandler(GameSession session, CBuyItemReqMessage message)
+        {
+            var shop = GameServer.Instance.ResourceCache.GetShop();
+            var plr = session.Player;
+
+            if (message.Items == null || message.Items.Length == 0 || message.Items.Length > MaxBasketSize)
+            {
+                Logger.Error()
+                    .Account(session)
+                    .Message($"Basket of {message.Items?.Length ?? 0} items")
+                    .Write();
+
+                await session.SendAsync(new SBuyItemAckMessage(ItemBuyResult.UnkownItem))
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            var lines = new List<Tuple<ShopItemDto, ShopItemInfo, ShopPrice>>();
+            var pen = 0L;
+            var ap = 0L;
+
+            foreach (var item in message.Items)
+            {
+                var shopItemInfo = shop.GetItemInfo(item.ItemNumber, item.PriceType);
+                if (shopItemInfo == null)
+                {
+                    Logger.Error()
+                        .Account(session)
+                        .Message($"No shop entry found for {item.ItemNumber} {item.PriceType} {item.Period}{item.PeriodType}")
+                        .Write();
+
+                    await session.SendAsync(new SBuyItemAckMessage(ItemBuyResult.UnkownItem))
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                if (!shopItemInfo.IsEnabled)
+                {
+                    Logger.Error()
+                        .Account(session)
+                        .Message($"No shop entry {item.ItemNumber} {item.PriceType} {item.Period}{item.PeriodType} is not enabled")
+                        .Write();
+
+                    await session.SendAsync(new SBuyItemAckMessage(ItemBuyResult.UnkownItem))
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                var price = shopItemInfo.PriceGroup.GetPrice(item.PeriodType, item.Period);
+                if (price == null)
+                {
+                    Logger.Error()
+                        .Account(session)
+                        .Message($"Invalid price group for shop entry {item.ItemNumber} {item.PriceType} {item.Period}{item.PeriodType}")
+                        .Write();
+
+                    await session.SendAsync(new SBuyItemAckMessage(ItemBuyResult.UnkownItem))
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                if (!price.IsEnabled)
+                {
+                    Logger.Error()
+                        .Account(session)
+                        .Message($"Shop entry {item.ItemNumber} {item.PriceType} {item.Period}{item.PeriodType} is not enabled")
+                        .Write();
+
+                    await session.SendAsync(new SBuyItemAckMessage(ItemBuyResult.UnkownItem))
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                if (price.Price <= 0)
+                {
+                    Logger.Error()
+                        .Account(session)
+                        .Message($"Shop entry {item.ItemNumber} {item.PriceType} {item.Period}{item.PeriodType} costs {price.Price}")
+                        .Write();
+
+                    await session.SendAsync(new SBuyItemAckMessage(ItemBuyResult.UnkownItem))
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                if (item.Color > shopItemInfo.ShopItem.ColorGroup)
+                {
+                    Logger.Error()
+                        .Account(session)
+                        .Message($"Shop entry {item.ItemNumber} {item.PriceType} {item.Period}{item.PeriodType} has no color {item.Color}")
+                        .Write();
+
+                    await session.SendAsync(new SBuyItemAckMessage(ItemBuyResult.UnkownItem))
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                if (item.Effect != 0 && shopItemInfo.EffectGroup.Effects.All(effect => effect.Effect != item.Effect))
+                {
+                    Logger.Error()
+                        .Account(session)
+                        .Message($"Shop entry {item.ItemNumber} {item.PriceType} {item.Period}{item.PeriodType} has no effect {item.Effect}")
+                        .Write();
+
+                    await session.SendAsync(new SBuyItemAckMessage(ItemBuyResult.UnkownItem))
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                if (shopItemInfo.ShopItem.License != ItemLicense.None &&
+                    !plr.LicenseManager.Contains(shopItemInfo.ShopItem.License) &&
+                    Config.Instance.Game.EnableLicenseRequirement)
+                {
+                    Logger.Error()
+                        .Account(session)
+                        .Message($"Doesn't have license {shopItemInfo.ShopItem.License}")
+                        .Write();
+
+                    await session.SendAsync(new SBuyItemAckMessage(ItemBuyResult.UnkownItem))
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                switch (shopItemInfo.PriceGroup.PriceType)
+                {
+                    case ItemPriceType.PEN:
+                        pen += price.Price;
+                        break;
+
+                    case ItemPriceType.AP:
+                    case ItemPriceType.Premium:
+                        ap += price.Price;
+                        break;
+
+                    default:
+                        Logger.Error()
+                            .Account(session)
+                            .Message($"Unknown PriceType {shopItemInfo.PriceGroup.PriceType}")
+                            .Write();
+
+                        await session.SendAsync(new SBuyItemAckMessage(ItemBuyResult.UnkownItem))
+                            .ConfigureAwait(false);
+                        return;
+                }
+
+                lines.Add(Tuple.Create(item, shopItemInfo, price));
+            }
+
+            if (plr.PEN < pen || plr.AP < ap)
+            {
+                await session.SendAsync(new SBuyItemAckMessage(ItemBuyResult.NotEnoughMoney))
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            plr.PEN -= (uint)pen;
+            plr.AP -= (uint)ap;
+
+            foreach (var line in lines)
+            {
+                var item = line.Item1;
+                var shopItemInfo = line.Item2;
+                var price = line.Item3;
+
+                var plrItem = plr.Inventory.Create(shopItemInfo, price, item.Color, item.Effect,
+                    (uint)(price.PeriodType == ItemPeriodType.Units ? price.Period : 0));
+
+                await session.SendAsync(new SBuyItemAckMessage(new[] { plrItem.Id }, item))
+                    .ConfigureAwait(false);
+            }
+
+            await session.SendAsync(new SRefreshCashInfoAckMessage(plr.PEN, plr.AP))
+                .ConfigureAwait(false);
+        }
+
+        [MessageHandler(typeof(CRandomShopUpdateCheckReqMessage))]
+        public async Task RandomShopUpdateCheckHandler(GameSession session, CRandomShopUpdateCheckReqMessage message)
+        {
+            await session.SendAsync(new SRandomShopUpdateCheckAckMessage
+            {
+                Date = message.Date
+            }).ConfigureAwait(false);
+        }
+
+        [MessageHandler(typeof(CRandomShopRollingStartReqMessage))]
+        public async Task RandomShopRollHandler(GameSession session, CRandomShopRollingStartReqMessage message)
+        {
+            // Desactivado: Season 2 usa 60101-60105 para la tienda aleatoria y
+            // los mensajes de aqui son de Season 1 (59901, 59906...).
+            Logger.Warn("random shop desactivado: RandomShopRollingStart ignorado");
+            return;
+
+#pragma warning disable 162
+            var plr = session.Player;
+            if (plr == null)
+                return;
+
+            var tab = (uint)(message.IsWeapon ? 1 : 0);
+
+            if (!FumbiShop.HasPool || plr.PEN < FumbiShop.RollCostPEN)
+            {
+                await session.SendAsync(new SRandomShopItemInfoAckMessage
+                {
+                    Item = new RandomShopItemDto { Tab = tab }
+                }).ConfigureAwait(false);
+                return;
+            }
+
+            var gender = plr.CharacterManager.CurrentCharacter.Gender == CharacterGender.Female
+                ? Gender.Female
+                : Gender.Male;
+            if (message.Gender == 0)
+                gender = Gender.Male;
+            else if (message.Gender == 1)
+                gender = Gender.Female;
+
+            var entry = FumbiShop.Roll(message.IsWeapon, gender,
+                FumbiShop.Selected(plr, message.HeldItemNumber),
+                message.HoldItem != 0);
+            if (entry == null)
+            {
+                await session.SendAsync(new SRandomShopItemInfoAckMessage
+                {
+                    Item = new RandomShopItemDto { Tab = tab }
+                }).ConfigureAwait(false);
+                return;
+            }
+
+            plr.PEN -= FumbiShop.RollCostPEN;
+
+            PlayerItem rolled;
+            try
+            {
+                rolled = plr.Inventory.Create(
+                    entry.ItemNumber,
+                    entry.PriceType,
+                    entry.PeriodType,
+                    entry.Period,
+                    entry.Color,
+                    0,
+                    (uint)(entry.PeriodType == ItemPeriodType.Units ? entry.Period : 0));
+            }
+            catch (Exception ex)
+            {
+                plr.PEN += FumbiShop.RollCostPEN;
+                Logger.Error()
+                    .Account(session)
+                    .Exception(ex)
+                    .Message($"Random shop failed to create item {entry.ItemNumber}")
+                    .Write();
+
+                await session.SendAsync(new SRandomShopItemInfoAckMessage
+                {
+                    Item = new RandomShopItemDto { Tab = tab }
+                }).ConfigureAwait(false);
+                return;
+            }
+
+            FumbiShop.SetLastRoll(plr, rolled.Id, entry.ItemNumber);
+
+            var color = message.HoldColor != 0 && message.HeldColor >= 0
+                ? (uint)message.HeldColor
+                : entry.Color;
+            var effect = message.HoldEffect != 0 && message.HeldEffect >= 0
+                ? (uint)message.HeldEffect
+                : 0u;
+
+            await session.SendAsync(new SRandomShopItemInfoAckMessage
+            {
+                Item = new RandomShopItemDto
+                {
+                    Tab = tab,
+                    ItemNumber = entry.ItemNumber,
+                    Effect = effect,
+                    Color = color,
+                    PeriodType = entry.PeriodType,
+                    Period = entry.Period
+                }
+            }).ConfigureAwait(false);
+
+            await session.SendAsync(new SRefreshCashInfoAckMessage(plr.PEN, plr.AP))
+                .ConfigureAwait(false);
+#pragma warning restore 162
+        }
+
+        [MessageHandler(typeof(CRandomShopItemGetReqMessage))]
+        public async Task RandomShopItemGetHandler(GameSession session, CRandomShopItemGetReqMessage message)
+        {
+            Logger.Warn("random shop desactivado: RandomShopItemGet ignorado");
+            return;
+
+#pragma warning disable 162
+            var plr = session.Player;
+            if (plr == null)
+                return;
+
+            FumbiShop.ClearLastRoll(plr);
+
+            await session.SendAsync(new SRandomShopItemInfoAckMessage
+            {
+                Item = new RandomShopItemDto { Tab = message.Tab }
+            }).ConfigureAwait(false);
+#pragma warning restore 162
+        }
+
+        [MessageHandler(typeof(CRandomShopItemSaleReqMessage))]
+        public async Task RandomShopItemSaleHandler(GameSession session, CRandomShopItemSaleReqMessage message)
+        {
+            var plr = session.Player;
+            if (plr == null)
+                return;
+
+            ulong itemId;
+            if (FumbiShop.TryTakeLastRoll(plr, out itemId))
+            {
+                var item = plr.Inventory.GetItem(itemId);
+                if (item != null)
+                {
+                    plr.Inventory.Remove(item);
+                    plr.PEN += FumbiShop.RollCostPEN / 2;
+                    await session.SendAsync(new SRefreshCashInfoAckMessage(plr.PEN, plr.AP))
+                        .ConfigureAwait(false);
+                }
+            }
+
+            await session.SendAsync(new SRandomShopItemInfoAckMessage
+            {
+                Item = new RandomShopItemDto { Tab = message.Tab }
+            }).ConfigureAwait(false);
+        }
+    }
+}

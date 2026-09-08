@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Netsphere.Network</RootNamespace>
+    <AssemblyName>Netsphere.Network</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="BlubLib"><HintPath>..\..\libs\BlubLib7\BlubLib.dll</HintPath></Reference>
+    <Reference Include="BlubLib.Serialization"><HintPath>..\..\libs\BlubLib7\BlubLib.Serialization.dll</HintPath></Reference>
+    <Reference Include="SharpLzo"><HintPath>..\..\libs\SharpLzo.dll</HintPath></Reference>
+    <Reference Include="SlimMath"><HintPath>..\..\libs\SlimMath.dll</HintPath></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Sigil" Version="5.0.0" />
+    <PackageReference Include="DotNetty.Buffers" Version="0.6.0" />
+    <PackageReference Include="DotNetty.Common" Version="0.6.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Netsphere\Netsphere.csproj" />
+    <ProjectReference Include="..\ProudNet\ProudNet.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="miniLzo_x64.dll" Condition="Exists('miniLzo_x64.dll')"><CopyToOutputDirectory>Always</CopyToOutputDirectory></Content>
+    <Content Include="miniLzo_x86.dll" Condition="Exists('miniLzo_x86.dll')"><CopyToOutputDirectory>Always</CopyToOutputDirectory></Content>
+    <None Include="liblzo.so" Condition="Exists('liblzo.so')"><CopyToOutputDirectory>Always</CopyToOutputDirectory></None>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Remove="Message\Auth\AuthMapper.cs" />
+    <Compile Remove="Message\Chat\ChatMapper.cs" />
+    <Compile Remove="Message\Event\EventMapper.cs" />
+    <Compile Remove="Message\Game\GameMapper.cs" />
+    <Compile Remove="Message\GameRule\GameRuleMapper.cs" />
+    <Compile Remove="Message\NetsphereMessage.cs" />
+    <Compile Remove="Message\NetsphereMessageFactory.cs" />
+    <Compile Remove="Message\P2P\P2PMapper.cs" />
+    <Compile Remove="Message\Relay\RelayMapper.cs" />
+    <Compile Remove="NetspherePipe.cs" />
+  </ItemGroup>
+</Project>

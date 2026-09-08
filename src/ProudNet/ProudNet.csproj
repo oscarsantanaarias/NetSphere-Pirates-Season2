@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>ProudNet</RootNamespace>
+    <AssemblyName>ProudNet</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="BlubLib"><HintPath>..\..\libs\BlubLib7\BlubLib.dll</HintPath></Reference>
+    <Reference Include="BlubLib.DotNetty"><HintPath>..\..\libs\BlubLib7\BlubLib.DotNetty.dll</HintPath></Reference>
+    <Reference Include="BlubLib.Serialization"><HintPath>..\..\libs\BlubLib7\BlubLib.Serialization.dll</HintPath></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Sigil" Version="5.0.0" />
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
+    <PackageReference Include="DotNetty.Buffers" Version="0.6.0" />
+    <PackageReference Include="DotNetty.Codecs" Version="0.6.0" />
+    <PackageReference Include="DotNetty.Common" Version="0.6.0" />
+    <PackageReference Include="DotNetty.Transport" Version="0.6.0" />
+    <PackageReference Include="DotNetZip" Version="1.10.1" />
+    <PackageReference Include="NLog" Version="4.7.15" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Remove="Data\RelayDestinationDto.cs" />
+    <Compile Remove="EncryptContext.cs" />
+    <Compile Remove="Message\C2S.cs" />
+    <Compile Remove="Message\Core\C2S.cs" />
+    <Compile Remove="Message\Core\CoreMapper.cs" />
+    <Compile Remove="Message\Core\CoreMessage.cs" />
+    <Compile Remove="Message\Core\S2C.cs" />
+    <Compile Remove="Message\Core\SC.cs" />
+    <Compile Remove="Message\ProudMapper.cs" />
+    <Compile Remove="Message\ProudMessage.cs" />
+    <Compile Remove="Message\S2C.cs" />
+    <Compile Remove="ProudConfig.cs" />
+    <Compile Remove="ProudPipe.cs" />
+    <Compile Remove="ProudProtocol.cs" />
+    <Compile Remove="ProudServerPipe.cs" />
+    <Compile Remove="Serializers\ArrayWithScalarSerializer.cs" />
+    <Compile Remove="Serializers\IPEndPointAddressStringSerializer.cs" />
+    <Compile Remove="Serializers\IPEndPointSerializer.cs" />
+    <Compile Remove="Serializers\ReadToEndSerializer.cs" />
+    <Compile Remove="Serializers\ScalarSerializer.cs" />
+    <Compile Remove="Serializers\StringSerializer.cs" />
+    <Compile Remove="Services\ProudCoreServerService.cs" />
+    <Compile Remove="Services\ProudCoreService.cs" />
+    <Compile Remove="Services\ProudServerService.cs" />
+  </ItemGroup>
+</Project>

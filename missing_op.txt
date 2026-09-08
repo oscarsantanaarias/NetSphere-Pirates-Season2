@@ -1,0 +1,73 @@
+OPCODES QUE ESTABAN EN EL CLIENTE SEASON 2 Y NO EN EL EMULADOR
+==============================================================
+Sacados de las tablas de nombres RMI del cliente (unpacked_NONEUTRALIZE.exe):
+
+    0x011466E0   8 entradas    Auth
+    0x011468AC  44 entradas    Chat
+    0x01146AA0 290 entradas    Game (60 req + 105 ack + 49 GameRule req + 76 GameRule ack)
+    0x011475B8  14 entradas    Relay
+
+Cada tabla esta duplicada: una copia para los emisores y otra para los receptores.
+De 356 mensajes, 318 ya coincidian. Estos 38 faltaban y ya estan anadidos a OpCodes.cs.
+
+
+CHAT
+----
+15016  RequestSaveCommunityPermission   -> CSaveCommunityPermissionReq
+15017  RequestSaveOptionBinary          -> CSaveOptionBinaryReq
+16022  AckPlayerInfo                    -> SPlayerInfoAck
+16023  AckPlayerPosInfo                 -> SPlayerPosInfoAck
+16024  AckPlayerInfoList                -> SPlayerInfoListAck
+16025  ReqUserData                      -> CUserDataReq2
+16027  AckClubNoticeChange              -> SClubNoticeChangeAck
+
+RELAY
+-----
+11003  Chat                             -> SChatAck
+
+GAME C2S
+--------
+50025  CGameGuardAuthReq                (estaba comentado y con el numero 50026)
+50026  CHShieldMakeResponseReq          (estaba comentado y con el numero 50027)
+50055  CCreateFirstCharacterReq
+50056  CShoppingBasketActionReq
+50057  CShoppingBasketDeleteReq
+50058  CRandomShopUpdateCheckReq
+50060  CRandomShopGetNiceItemReq
+
+GAME S2C
+--------
+60048  CGameGuardAuthAck                (estaba comentado)
+60049  CHShieldMakeResponseAck          (estaba comentado)
+60093  CRoomInfosAck                    -> SRoomInfosAck
+60094  CDefaultNickAck                  -> SDefaultNickAck
+60095  CStartLoadingAck                 -> SStartLoadingAck
+60096  CStartIngameAck                  -> SStartIngameAck
+60097  CEndLoadingAck                   -> SEndLoadingAck
+60098  CGiveItemResult                  -> SGiveItemResultAck
+60099  CShoppingBasketActionAck         -> SShoppingBasketActionAck
+60100  CShoppingBasketListAck           -> SShoppingBasketListAck
+60101  CRandomShopUpdateRequestAck      -> SRandomShopUpdateRequestAck
+60102  CRandomShopUpdateCheckAck        -> SRandomShopUpdateCheckAck
+60103  CRandomShopUpdateInfoAck         -> SRandomShopUpdateInfoAck
+60104  CRandomShopRollingStartAck       -> SRandomShopRollingStartAck
+60105  CRandomShopWhoGetNiceItemAck     -> SRandomShopWhoGetNiceItemAck
+
+GAMERULE S2C  (el modo Seize, que Season 1 no tiene)
+----------------------------------------------------
+21072  Seize_Update_Info                -> SSeizeUpdateInfoAck
+21073  Seize_Update_Info_By_Intrude     -> SSeizeUpdateInfoByIntrudeAck
+21074  Seize_Fever_Time                 -> SSeizeFeverTimeAck
+21075  Seize_Get_Buff_Item              -> SSeizeGetBuffItemAck
+21076  Seize_Drop_Buff_Item             -> SSeizeDropBuffItemAck
+
+Los Seize del lado C2S (20047 CSeizePositionCaptureReq y 20048 CSeizeGetBuffItemReq)
+ya estaban y coinciden.
+
+
+LO QUE FALTA POR HACER
+----------------------
+Anadir el opcode al enum solo hace que el mensaje deje de ser desconocido. Para que
+sirvan de verdad hace falta, por cada uno, la clase [BlubContract] con su layout, el
+registro en GameMessageFactory / GameMapper y el handler. El layout hay que sacarlo
+del binario: cada mensaje tiene su serializador, como sub_B1B150 para CLoginReq.

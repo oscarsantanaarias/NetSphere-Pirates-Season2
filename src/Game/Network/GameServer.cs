@@ -1,0 +1,550 @@
+﻿using System;
+using System.Linq;
+using System.Net;
+using Auth.ServiceModel;
+using BlubLib.Threading;
+using ExpressMapper;
+using Netsphere.Commands;
+using Netsphere.Network.Data.Chat;
+using Netsphere.Network.Data.Game;
+using Netsphere.Network.Data.GameRule;
+using Netsphere.Network.Message.Game;
+using Netsphere.Resource;
+using NLog;
+using NLog.Fluent;
+using ProudNet;
+using System.Threading.Tasks;
+using BlubLib.DotNetty.Handlers.MessageHandling;
+using Netsphere.Network.Services;
+using Netsphere.Network.Message.GameRule;
+using ExpressMapper.Extensions;
+using ProudNet.Serialization;
+using System.Text;
+using System.IO;
+
+namespace Netsphere.Network
+{
+    internal class GameServer : ProudServer
+    {
+        public static GameServer Instance { get; private set; }
+
+        // ReSharper disable once InconsistentNaming
+        private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
+
+        private readonly ILoop _worker;
+        private readonly ServerlistManager _serverlistManager;
+
+        private TimeSpan _mailBoxCheckTimer;
+        private TimeSpan _saveTimer;
+
+        public CommandManager CommandManager { get; }
+        public PlayerManager PlayerManager { get; }
+        public ChannelManager ChannelManager { get; }
+        public ResourceCache ResourceCache { get; }
+        public ClubManager ClubManager { get; }
+
+        public static void Initialize(Configuration config)
+        {
+            if (Instance != null)
+                throw new InvalidOperationException("Server is already initialized");
+
+            config.Version = new Guid("{beb92241-8333-4117-ab92-9b4af78c688f}");
+            config.MessageFactories = new MessageFactory[] { new GameMessageFactory(), new GameRuleMessageFactory() };
+            config.SessionFactory = new GameSessionFactory();
+
+            // ReSharper disable InconsistentNaming
+            Predicate<GameSession> MustBeLoggedIn = session => session.IsLoggedIn();
+            Predicate<GameSession> MustNotBeLoggedIn = session => !session.IsLoggedIn();
+            Predicate<GameSession> MustBeInChannel = session => session.Player.Channel != null;
+            Predicate<GameSession> MustNotBeInChannel = session => session.Player.Channel == null;
+            Predicate<GameSession> MustBeInRoom = session => session.Player.Room != null;
+            Predicate<GameSession> MustNotBeInRoom = session => session.Player.Room == null;
+            Predicate<GameSession> MustBeRoomHost = session => session.Player.Room.Host == session.Player;
+            Predicate<GameSession> MustBeRoomMaster = session => session.Player.Room.Master == session.Player;
+            // ReSharper restore InconsistentNaming
+
+            config.MessageHandlers = new IMessageHandler[]
+            {
+                new FilteredMessageHandler<GameSession>()
+                    .AddHandler(new AuthService())
+                    .AddHandler(new CharacterService())
+                    .AddHandler(new GeneralService())
+                    .AddHandler(new AdminService())
+                    .AddHandler(new ChannelService())
+                    .AddHandler(new ShopService())
+                    .AddHandler(new InventoryService())
+                    .AddHandler(new MissionService())
+                    .AddHandler(new RoomService())
+                    .AddHandler(new ClubService())
+                    .AddHandler(new SecurityService())
+
+                    .RegisterRule<CLoginReqMessage>(MustNotBeLoggedIn)
+                    .RegisterRule<CCreateCharacterReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CSelectCharacterReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CDeleteCharacterReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CAdminShowWindowReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CAdminActionReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CGetChannelInfoReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CChannelEnterReqMessage>(MustBeLoggedIn, MustNotBeInRoom)
+                    .RegisterRule<CChannelLeaveReqMessage>(MustBeLoggedIn, MustBeInChannel)
+                    .RegisterRule<CLicensedReqMessage>(MustBeLoggedIn, MustBeInChannel)
+                    .RegisterRule<CExerciseLicenceReqMessage>(MustBeLoggedIn, MustBeInChannel)
+                    .RegisterRule<CBuyItemReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CRandomShopRollingStartReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CRandomShopItemSaleReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CUseItemReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CRepairItemReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CRefundItemReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CDiscardItemReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CEnterPlayerReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom/*,
+                        session => session.Player.RoomInfo.IsConnecting*/)
+                    .RegisterRule<CMakeRoomReqMessage>(MustBeLoggedIn, MustBeInChannel, MustNotBeInRoom)
+                    .RegisterRule<CGameRoomEnterReqMessage>(MustBeLoggedIn, MustBeInChannel, MustNotBeInRoom)
+                    .RegisterRule<CQuickStartReqMessage>(MustBeLoggedIn, MustBeInChannel, MustNotBeInRoom)
+                    .RegisterRule<CJoinTunnelInfoReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom)
+                    .RegisterRule<CChangeTeamReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom)
+                    .RegisterRule<CAutoMixingTeamReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom, MustBeRoomMaster)
+                    .RegisterRule<CAutoAssingTeamReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom, MustBeRoomMaster)
+                    .RegisterRule<CMixChangeTeamReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom, MustBeRoomMaster)
+                    .RegisterRule<CPlayerGameModeChangeReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom)
+                    .RegisterRule<CScoreKillReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom)
+                    .RegisterRule<CScoreKillAssistReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom)
+                    .RegisterRule<CScoreOffenseReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom)
+                    .RegisterRule<CScoreOffenseAssistReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom)
+                    .RegisterRule<CScoreDefenseReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom)
+                    .RegisterRule<CScoreDefenseAssistReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom)
+                    .RegisterRule<CScoreTeamKillReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom)
+                    .RegisterRule<CScoreHealAssistReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom)
+                    .RegisterRule<CScoreSuicideReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom)
+                    .RegisterRule<CScoreReboundReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom, MustBeRoomHost,
+                        session => session.Player.RoomInfo.State != PlayerState.Lobby &&
+                                   session.Player.RoomInfo.State != PlayerState.Spectating)
+                    .RegisterRule<CScoreGoalReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom, MustBeRoomHost,
+                        session => session.Player.RoomInfo.State != PlayerState.Lobby &&
+                                   session.Player.RoomInfo.State != PlayerState.Spectating)
+                    .RegisterRule<CBeginRoundReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom, MustBeRoomMaster)
+                    .RegisterRule<CReadyRoundReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom,
+                        session => session.Player.RoomInfo.State == PlayerState.Lobby)
+                    .RegisterRule<CEventMessageReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom)
+                    .RegisterRule<CLoadingSucceesReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom)
+                    .RegisterRule<CItemsChangeReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom,
+                        session => session.Player.RoomInfo.State == PlayerState.Lobby)
+                    .RegisterRule<CAvatarChangeReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom,
+                        session => session.Player.RoomInfo.State == PlayerState.Lobby ||
+                                   session.Player.Room.GameRuleManager.GameRule.StateMachine.IsInState(
+                                       GameRuleState.HalfTime))
+                    .RegisterRule<CChangeRuleNotifyReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom,
+                        MustBeRoomMaster,
+                        session =>
+                            session.Player.Room.GameRuleManager.GameRule.StateMachine.IsInState(GameRuleState.Waiting))
+                    .RegisterRule<CClubAddressReqMessage>(MustBeLoggedIn, MustBeInChannel)
+                    .RegisterRule<CGameGuardAuthReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CHShieldMakeResponseReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CShoppingBasketActionReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CShoppingBasketDeleteReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CRandomShopGetNiceItemReqMessage>(MustBeLoggedIn)
+                    .RegisterRule<CGetClubInfoReqMessage>(MustBeLoggedIn, MustBeInChannel)
+                    .RegisterRule<CGetClubInfoByNameReqMessage>(MustBeLoggedIn, MustBeInChannel)
+                    .RegisterRule<CClubJoinReqMessage>(MustBeLoggedIn, MustBeInChannel)
+                    .RegisterRule<CClubUnJoinReqMessage>(MustBeLoggedIn, MustBeInChannel)
+                    .RegisterRule<CClubNoticeChangeReqMessage>(MustBeLoggedIn, MustBeInChannel)
+                    .RegisterRule<CClubHistoryReqMessage>(MustBeLoggedIn, MustBeInChannel)
+                    .RegisterRule<CClubInfoReqMessage>(MustBeLoggedIn, MustBeInChannel)
+                    .RegisterRule<CLeavePlayerRequestReqMessage>(MustBeLoggedIn, MustBeInChannel, MustBeInRoom)
+
+            };
+
+            Instance = new GameServer(config);
+        }
+
+        private GameServer(Configuration config)
+            : base(config)
+        {
+            RegisterMappings();
+
+            //ServerTime = TimeSpan.Zero;
+
+            CommandManager = new CommandManager(this);
+            CommandManager.Add(new ServerCommand())
+                .Add(new ReloadCommand())
+                .Add(new GameCommands())
+                .Add(new InventoryCommands())
+                .Add(new GMCommands())
+                .Add(new ClanCommands())
+                .Add(new AdminCommands())
+                .Add(new HelpCommand());
+
+            PlayerManager = new PlayerManager();
+            ResourceCache = new ResourceCache();
+            ClubManager = new ClubManager();
+            ChannelManager = new ChannelManager(ResourceCache.GetChannels());
+
+            _worker = new ThreadLoop(TimeSpan.FromMilliseconds(100), (Action<TimeSpan>)Worker);
+            _serverlistManager = new ServerlistManager();
+        }
+
+        #region Events
+
+        protected override void OnStarted()
+        {
+            ResourceCache.PreCache();
+            _worker.Start();
+            _serverlistManager.Start();
+        }
+
+        protected override void OnStopping()
+        {
+            _worker.Stop(new TimeSpan(0));
+            _serverlistManager.Dispose();
+        }
+
+        protected override void OnDisconnected(ProudSession session)
+        {
+            var gameSession = (GameSession)session;
+            var plr = gameSession.Player;
+            if (plr != null)
+            {
+                Step(() => plr.Room?.Leave(plr), gameSession, "leaving the room");
+                Step(() => plr.Channel?.Leave(plr), gameSession, "leaving the channel");
+                Step(() => plr.Save(), gameSession, "saving");
+                Step(() => PlayerManager.Remove(plr), gameSession, "removing from the player list");
+                Step(() => Netsphere.Shop.FumbiShop.Remove(plr), gameSession, "clearing the fumbi roll");
+
+                Netsphere.Shop.FumbiShop.Remove(gameSession.Player);
+
+                Logger.Debug()
+                    .Account(gameSession)
+                    .Message("Disconnected")
+                    .Write();
+
+                Step(() =>
+                {
+                    if (plr.ChatSession != null)
+                    {
+                        plr.ChatSession.GameSession = null;
+                        plr.ChatSession.Dispose();
+                    }
+                }, gameSession, "closing the chat session");
+
+                Step(() =>
+                {
+                    if (plr.RelaySession != null)
+                    {
+                        plr.RelaySession.GameSession = null;
+                        plr.RelaySession.Dispose();
+                    }
+                }, gameSession, "closing the relay session");
+
+                plr.Session = null;
+                plr.ChatSession = null;
+                plr.RelaySession = null;
+                gameSession.Player = null;
+            }
+
+            base.OnDisconnected(session);
+        }
+
+        protected override void OnError(ProudNet.ErrorEventArgs e)
+        {
+            var log = Logger.Error();
+            if (e.Session != null)
+                log = log.Account((GameSession)e.Session);
+            log.Exception(e.Exception)
+                .Write();
+            base.OnError(e);
+        }
+
+        //private void OnUnhandledMessage(object sender, MessageReceivedEventArgs e)
+        //{
+        //    var session = (GameSession)e.Session;
+        //    Logger.Warn()
+        //        .Account(session)
+        //        .Message($"Unhandled message {e.Message.GetType().Name}")
+        //        .Write();
+        //}
+
+        #endregion
+
+        public void BroadcastNotice(string message)
+        {
+            Broadcast(new SNoticeMessageAckMessage(message));
+        }
+
+        private static void Step(Action what, GameSession session, string name)
+        {
+            try
+            {
+                what();
+            }
+            catch (Exception ex)
+            {
+                Logger.Error()
+                    .Account(session)
+                    .Exception(ex)
+                    .Message($"Cleanup failed while {name}")
+                    .Write();
+            }
+        }
+
+        private static readonly TimeSpan DeadSessionTimeout = TimeSpan.FromSeconds(90);
+        private TimeSpan _deadSessionTimer;
+
+        private void DropDeadSessions(TimeSpan delta)
+        {
+            _deadSessionTimer += delta;
+            if (_deadSessionTimer < TimeSpan.FromSeconds(15))
+                return;
+
+            _deadSessionTimer = TimeSpan.Zero;
+
+            foreach (var session in Sessions.Values.ToArray())
+            {
+                var gameSession = session as GameSession;
+                if (gameSession?.Player == null)
+                    continue;
+
+                if (session.LastSpeedHackDetectorPing == DateTime.MinValue)
+                    continue;
+
+                if (DateTime.Now - session.LastSpeedHackDetectorPing < DeadSessionTimeout)
+                    continue;
+
+                Logger.Info()
+                    .Account(gameSession)
+                    .Message($"No ping for {(int)(DateTime.Now - session.LastSpeedHackDetectorPing).TotalSeconds}s, dropping")
+                    .Write();
+
+                Step(() => session.Dispose(), gameSession, "dropping a dead session");
+            }
+        }
+
+        private void Worker(TimeSpan delta)
+        {
+            ChannelManager.Update(delta);
+
+            DropDeadSessions(delta);
+
+            // ToDo Use another thread for this?
+            _saveTimer = _saveTimer.Add(delta);
+            if (_saveTimer >= Config.Instance.SaveInterval)
+            {
+                _saveTimer = TimeSpan.Zero;
+
+                Logger.Info("Saving players...");
+
+                int playerson = 0;
+
+                foreach (var plr in PlayerManager.Where(plr => plr.IsLoggedIn()))
+                {
+                    try
+                    {
+                        plr.Save();
+                        playerson++;
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error()
+                            .Account(plr)
+                            .Exception(ex)
+                            .Message("Failed to save player")
+                            .Write();
+                    }
+                }
+                 
+                Logger.Info()
+                    .Message($"Saving players completed, saving player amount, which is {playerson}") //player counter
+                    .Write();
+
+        }
+
+            _mailBoxCheckTimer = _mailBoxCheckTimer.Add(delta);
+            if (_mailBoxCheckTimer >= TimeSpan.FromMinutes(10))
+            {
+                _mailBoxCheckTimer = TimeSpan.Zero;
+
+                foreach (var plr in PlayerManager.Where(plr => plr.IsLoggedIn()))
+                    plr.Mailbox.Remove(plr.Mailbox.Where(mail => mail.Expires <= DateTimeOffset.Now));
+            }
+        }
+
+        private static void RegisterMappings()
+        {
+            Mapper.Register<GameServer, ServerInfoDto>()
+                .Member(dest => dest.Id, src => Config.Instance.Id)
+                .Member(dest => dest.Name, src => Config.Instance.Name)
+                .Member(dest => dest.PlayerLimit, src => Config.Instance.PlayerLimit)
+                .Member(dest => dest.PlayerOnline, src => src.Sessions.Count)
+                .Member(dest => dest.EndPoint,
+                    src => new IPEndPoint(IPAddress.Parse(Config.Instance.IP), Config.Instance.Listener.Port))
+                .Member(dest => dest.ChatEndPoint,
+                    src => new IPEndPoint(IPAddress.Parse(Config.Instance.IP), Config.Instance.ChatListener.Port));
+
+            Mapper.Register<Channel, ChannelInfoDto>()
+                .Member(dest => dest.ChannelId, src => src.Id)
+                .Member(dest => dest.PlayerCount, src => src.Players.Count)
+                .Member(dest => dest.PlayerLimit, src => (ushort)src.PlayerLimit)
+                .Member(dest => dest.Name, src => src.Name ?? "")
+                .Member(dest => dest.Description, src => src.Description ?? "")
+                .Member(dest => dest.Rank, src => src.Rank ?? "FREE")
+                .Member(dest => dest.IsClanChannel, src => src.IsClanChannel)
+                .Member(dest => dest.Color, src => src.Color)
+                .Member(dest => dest.MinLevel, src => (uint)0)
+                .Member(dest => dest.MaxLevel, src => (uint)127)
+                .Member(dest => dest.MinRankedLevel, src => (uint)0)
+                .Member(dest => dest.MaxRankedLevel, src => (uint)999);
+
+            Mapper.Register<PlayerItem, ItemDto>()
+                .Member(dest => dest.Refund, src => src.CalculateRefund())
+                .Member(dest => dest.PurchaseTime, src => src.PurchaseDate.ToUnixTimeSeconds())
+                .Member(dest => dest.ExpireTime,src => src.ExpireDate == DateTimeOffset.MinValue ? -1 : src.ExpireDate.ToUnixTimeSeconds())                
+                .Value(dest => dest.TimeLeft, 0)// ToDo
+                .Value(dest => dest.Unk2, 0)
+                .Value(dest => dest.Unk3, 0)
+                .Value(dest => dest.Unk4, 0)
+                .Value(dest => dest.Unk5, (uint)0)
+                .Value(dest => dest.Unk6, (uint)0);
+
+            Mapper.Register<Deny, DenyDto>()
+                .Member(dest => dest.AccountId, src => src.DenyId)
+                .Member(dest => dest.Nickname, src => src.Nickname);
+
+            Mapper.Register<Room, RoomDto>()
+                .Member(dest => dest.RoomId, src => (byte)src.Id)
+                .Member(dest => dest.GameRule, src => (uint)src.Options.MatchKey.GameRule)
+                .Member(dest => dest.Map, src => src.Options.MatchKey.Map)
+                .Member(dest => dest.PlayerLimit, src => (byte)src.Options.MatchKey.PlayerLimit)
+                .Member(dest => dest.WeaponLimit, src => (uint)src.Options.ItemLimit)
+                .Member(dest => dest.Name, src => src.Options.Name)
+                .Member(dest => dest.Password, src => src.Options.Password ?? "")
+                .Member(dest => dest.PlayerCount, src => (byte)src.TeamManager.Players.Count())
+                .Function(dest => dest.State, src =>
+                {
+                    if (src.GameRuleManager.GameRule.StateMachine.IsInState(GameRuleState.Waiting))
+                        return GameState.Waiting;
+
+                    if (src.GameRuleManager.GameRule.StateMachine.IsInState(GameRuleState.Result))
+                        return GameState.Result;
+
+                    if (src.GameRuleManager.GameRule.StateMachine.IsInState(GameRuleState.Playing))
+                        return GameState.Playing;
+
+                    throw new InvalidOperationException();
+                });
+
+            Mapper.Register<Room, EnterRoomInfoDto>()
+                .Member(dest => dest.RoomId, src => src.Id)
+                .Member(dest => dest.GameRule, src => (uint)src.Options.MatchKey.GameRule)
+                .Member(dest => dest.MapId, src => src.Options.MatchKey.Map)
+                .Member(dest => dest.PlayerLimit, src => (byte)src.Options.MatchKey.PlayerLimit)
+                .Member(dest => dest.TimeLimit, src => src.Options.TimeLimit.TotalMilliseconds)
+                .Member(dest => dest.TimeSync, src => src.GameRuleManager.GameRule.RoundTime.TotalMilliseconds)
+                .Member(dest => dest.ScoreLimit, src => src.Options.ScoreLimit)
+                .Member(dest => dest.RelayEndPoint, src => src.Options.ServerEndPoint)
+                .Function(dest => dest.State, src =>
+                {
+                    if (src.GameRuleManager.GameRule.StateMachine.IsInState(GameRuleState.Waiting))
+                        return GameState.Waiting;
+
+                    if (src.GameRuleManager.GameRule.StateMachine.IsInState(GameRuleState.Result))
+                        return GameState.Result;
+
+                    if (src.GameRuleManager.GameRule.StateMachine.IsInState(GameRuleState.Playing))
+                        return GameState.Playing;
+
+                    throw new InvalidOperationException();
+                })
+                .Function(dest => dest.TimeState, src =>
+                {
+                    //if (src.GameRuleManager.GameRule.StateMachine.IsInState(GameRuleState.FirstHalf))
+                    //    return GameTimeState.FirstHalf;
+
+                    if (src.GameRuleManager.GameRule.StateMachine.IsInState(GameRuleState.HalfTime))
+                        return GameTimeState.HalfTime;
+
+                    if (src.GameRuleManager.GameRule.StateMachine.IsInState(GameRuleState.SecondHalf))
+                        return GameTimeState.SecondHalf;
+
+                    return GameTimeState.FirstHalf;
+                });
+
+            Mapper.Register<Player, RoomPlayerDto>()
+                .Member(dest => dest.AccountId, src => src.Account.Id)
+                .Member(dest => dest.Nickname, src => src.Account.Nickname)
+                .Value(dest => dest.Unk1, (byte)144);
+
+            Mapper.Register<PlayerItem, Data.P2P.ItemDto>()
+                .Function(dest => dest.ItemNumber, src => src?.ItemNumber ?? 0);
+
+            Mapper.Register<RoomCreationOptions, ChangeRuleDto>()
+                 .Member(dest => dest.Name, src => src.Name)
+                 .Member(dest => dest.Password, src => src.Password)
+                 .Function(dest => dest.GameRule, src => (uint)src.MatchKey.GameRule)
+                 .Function(dest => dest.Map, src => src.MatchKey.Map)
+                 .Function(dest => dest.PlayerLimit, src => src.MatchKey.PlayerLimit)
+                 .Function(dest => dest.SpectatorLimit, src => src.MatchKey.SpectatorLimit)
+                 .Function(dest => dest.HasSpectator, src => src.MatchKey.SpectatorLimit > 0)
+                 .Member(dest => dest.TimeLimit, src => src.TimeLimit)
+                 .Member(dest => dest.ScoreLimit, src => src.ScoreLimit)
+                 .Member(dest => dest.ItemLimit, src => src.ItemLimit);
+
+            Mapper.Register<Mail, NoteDto>()
+                .Function(dest => dest.ReadCount, src => src.IsNew ? 0 : 1)
+                .Function(dest => dest.DaysLeft,
+                    src => DateTimeOffset.Now < src.Expires ? (src.Expires - DateTimeOffset.Now).TotalDays : 0);
+
+            Mapper.Register<Mail, NoteContentDto>()
+                 .Member(dest => dest.Id, src => src.Id)
+                 .Member(dest => dest.Message, src => src.Message);
+
+            Mapper.Register<PlayerItem, ItemDurabilityInfoDto>()
+                .Member(dest => dest.ItemId, src => src.Id);
+
+            Mapper.Register<Player, UserDataDto>()
+                .Member(dest => dest.AccountId, src => src.Account.Id)
+                .Function(dest => dest.Nickname, src => src.Account.Nickname)
+                .Function(dest => dest.Level, src => (uint)src.Level)
+                .Member(dest => dest.ServerId, src => Config.Instance.Id)
+                .Function(dest => dest.ChannelId, src => src.Channel != null ? (short)src.Channel.Id : (short)-1)
+                .Function(dest => dest.RoomId, src => src.Room?.Id ?? 0xFFFFFFFF) // ToDo: Tutorial, License
+                .Function(dest => dest.Team, src => src.RoomInfo?.Team?.Team ?? Team.Neutral)
+                .Function(dest => dest.TotalExp, src => src.TotalExperience)
+                .Function(dest => dest.DMStats, src => src.stats.DeathMatch.GetUserDataDto())
+                .Function(dest => dest.TDStats, src => src.stats.TouchDown.GetUserDataDto())
+                .Function(dest => dest.ChaserStats, src => src.stats.Chaser.GetUserDataDto())
+                .Function(dest => dest.BattleRoyalStats, src => src.stats.BattleRoyal.GetUserDataDto())
+                .Function(dest => dest.CaptainStats, src => src.stats.Captain.GetUserDataDto());
+
+            Mapper.Register<Player, PlayerClubInfoDto>()
+                .Function(dest => dest.Unk1, src => (uint)(src.Club?.Id ?? 0))
+                .Function(dest => dest.Unk2, src => (uint)(src.Club?.Count ?? 0))
+                .Function(dest => dest.Unk3, src => (uint)(src.Club?.Level ?? 0))
+                .Function(dest => dest.Unk7, src => src.Club?.Icon ?? "")
+                .Function(dest => dest.Unk9, src => src.Club?.Name ?? "")
+                .Function(dest => dest.ModeratorName, src => src.Club?.GetMasterName() ?? "");
+
+            Mapper.Register<Player, PlayerInfoShortDto>()
+                .Member(dest => dest.AccountId, src => src.Account.Id)
+                .Member(dest => dest.Nickname, src => src.Account.Nickname)
+                .Function(dest => dest.TotalExp, src => (int)src.TotalExperience)
+                .Function(dest => dest.IsGM, src => src.Account.SecurityLevel > SecurityLevel.User);
+
+            Mapper.Register<Player, PlayerLocationDto>()
+                .Function(dest => dest.ServerGroupId, src => Config.Instance.Id)
+                .Function(dest => dest.GameServerId, src => Config.Instance.Id)
+                .Function(dest => dest.ChannelId, src => src.Channel != null ? (int)src.Channel.Id : -1)
+                .Function(dest => dest.RoomId, src => src.Room != null ? (int)src.Room.Id : -1)
+                .Function(dest => dest.ChatServerId, src => Config.Instance.Id);
+
+            Mapper.Register<Player, PlayerInfoDto>()
+                .Function(dest => dest.Info, src => src.Map<Player, PlayerInfoShortDto>())
+                .Function(dest => dest.Location, src => src.Map<Player, PlayerLocationDto>());
+
+            Mapper.Register<Player, UserDataWithNickDto>()
+                .Member(dest => dest.AccountId, src => src.Account.Id)
+                .Member(dest => dest.Nickname, src => src.Account.Nickname)
+                .Function(dest => dest.Data, src => src.Map<Player, UserDataDto>());
+
+            Mapper.Compile(CompilationTypes.Source);
+        }
+    }
+}

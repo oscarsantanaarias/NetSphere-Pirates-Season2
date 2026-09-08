@@ -1,0 +1,601 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Xml.Serialization;
+using BlubLib.Configuration;
+using Netsphere.Resource.xml;
+using NLog;
+using NLog.Fluent;
+
+namespace Netsphere.Resource
+{
+    internal class ResourceLoader
+    {
+        // ReSharper disable once InconsistentNaming
+        private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
+        public string ResourcePath { get; }
+
+        public ResourceLoader(string resourcePath)
+        {
+            ResourcePath = resourcePath;
+        }
+
+        public byte[] GetBytes(string fileName)
+        {
+            var path = Path.Combine(ResourcePath, fileName.Replace('/', Path.DirectorySeparatorChar));
+            return File.Exists(path) ? File.ReadAllBytes(path) : null;
+        }
+
+        public IEnumerable<Experience> LoadExperience()
+        {
+            var dto = Deserialize<ExperienceDto>("xml/experience.x7");
+
+            var i = 0;
+            return dto.exp.Select(expDto => new Experience
+            {
+                Level = i++,
+                ExperienceToNextLevel = expDto.require,
+                TotalExperience = expDto.accumulate
+            });
+        }
+
+        public IEnumerable<ChannelInfo> LoadChannels()
+        {
+            var dto = Deserialize<ChannelSettingDto>("xml/_eu_channel_setting.x7");
+            var stringTable = Deserialize<StringTableDto>("language/xml/channel_setting_string_table.xml");
+
+            foreach (var channelDto in dto.channel_info)
+            {
+                var channel = new ChannelInfo
+                {
+                    Id = channelDto.id,
+                    Category = (ChannelCategory)channelDto.category,
+                    PlayerLimit = dto.setting.limit_player,
+                    Type = channelDto.type,
+                    Color = channelDto.color,
+                    IsClanChannel = channelDto.club_channel != 0
+                };
+
+                var name = stringTable.@string.FirstOrDefault(s => s.key.Equals(channelDto.name_key, StringComparison.InvariantCultureIgnoreCase));
+                if (string.IsNullOrWhiteSpace(name.eng))
+                    throw new Exception("Missing english translation for " + channelDto.name_key);
+
+                channel.Name = name.eng;
+
+                var rank = stringTable.@string.FirstOrDefault(s => s.key.Equals(channelDto.text1_key, StringComparison.InvariantCultureIgnoreCase));
+                channel.Rank = rank != null && !string.IsNullOrWhiteSpace(rank.eng) ? rank.eng : "FREE";
+
+                var desc = stringTable.@string.FirstOrDefault(s => s.key.Equals(channelDto.text2_key, StringComparison.InvariantCultureIgnoreCase));
+                channel.Description = desc != null && !string.IsNullOrWhiteSpace(desc.eng) ? desc.eng : "";
+
+                yield return channel;
+            }
+        }
+
+        public IEnumerable<MapInfo> LoadMaps()
+        {
+            // Season 2 keeps the map table in its own map.x7, not inside the
+            // gameinfo like Season 1 did. The ids are completely different.
+            var stringTable = Deserialize<StringTableDto>("language/xml/gameinfo_string_table.xml");
+            var dto = Deserialize<MapInfoDto>("xml/map.x7");
+
+            var loadedMapIds = new HashSet<int>();
+            foreach (var mapDto in dto.map)
+            {
+                if (mapDto.id > 255 || !loadedMapIds.Add(mapDto.id))
+                    continue;
+
+                var bginfoPath = mapDto.resource.bginfo_path.ToLower();
+                var map = new MapInfo
+                {
+                    Id = (byte)mapDto.id,
+                    MinLevel = 0,
+                    ServerId = 0,
+                    ChannelId = 0,
+                    RespawnType = 0
+                };
+
+                var data = GetBytes(bginfoPath);
+                if (data == null)
+                {
+                    Logger.Warn($"bginfo_path:{bginfoPath} not found");
+                    continue;
+                }
+
+                using (var ms = new MemoryStream(data))
+                    map.Config = IniFile.Load(ms);
+
+                foreach (var enabledMode in map.Config["MAPINFO"].Where(pair => pair.Key.StartsWith("enableMode", StringComparison.InvariantCultureIgnoreCase)).Select(pair => pair.Value))
+                {
+                    switch (enabledMode.Value.ToLower())
+                    {
+                        case "sl":
+                            AddGameRule(map, GameRule.Chaser);
+                            break;
+
+                        case "t":
+                            AddGameRule(map, GameRule.Touchdown);
+                            AddGameRule(map, GameRule.Captain);
+                            break;
+
+                        case "c":
+                            AddGameRule(map, GameRule.Captain);
+                            break;
+
+                        case "f":
+                            AddGameRule(map, GameRule.Deathmatch);
+                            AddGameRule(map, GameRule.BattleRoyal);
+                            AddGameRule(map, GameRule.Captain);
+                            break;
+
+                        case "d":
+                            AddGameRule(map, GameRule.Deathmatch);
+                            AddGameRule(map, GameRule.BattleRoyal);
+                            AddGameRule(map, GameRule.Chaser);
+                            AddGameRule(map, GameRule.Captain);
+                            break;
+
+                        case "s":
+                            AddGameRule(map, GameRule.Survival);
+                            break;
+
+                        case "n":
+                            AddGameRule(map, GameRule.Practice);
+                            break;
+
+                        case "a":
+                            AddGameRule(map, GameRule.Arcade);
+                            break;
+
+                        default:
+                            break;
+                    }
+                }
+
+                var name = stringTable.@string.FirstOrDefault(s => s.key.Equals(mapDto.Base.map_name_key, StringComparison.InvariantCultureIgnoreCase));
+                map.Name = name == null || string.IsNullOrWhiteSpace(name.eng)
+                    ? mapDto.Base.map_name_key
+                    : name.eng;
+
+                yield return map;
+            }
+        }
+
+        private static void AddGameRule(MapInfo map, GameRule gameRule)
+        {
+            if (!map.GameRules.Contains(gameRule))
+                map.GameRules.Add(gameRule);
+        }
+
+        public IEnumerable<ItemEffect> LoadEffects()
+        {
+            var dto = Deserialize<ItemEffectDto>("xml/item_effect.x7");
+            var stringTable = Deserialize<StringTableDto>("language/xml/item_effect_string_table.xml");
+
+            foreach (var itemEffectDto in dto.item.Where(itemEffect => itemEffect.id != 0))
+            {
+                var itemEffect = new ItemEffect
+                {
+                    Id = itemEffectDto.id
+                };
+
+                foreach (var attributeDto in itemEffectDto.attribute)
+                {
+                    itemEffect.Attributes.Add(new ItemEffectAttribute
+                    {
+                        Attribute = (Attribute)Enum.Parse(typeof(Attribute), attributeDto.effect.Replace("_", ""), true),
+                        Value = attributeDto.value,
+                        Rate = float.Parse(attributeDto.rate, CultureInfo.InvariantCulture)
+                    });
+                }
+
+                var name = stringTable.@string.FirstOrDefault(s => s.key.Equals(itemEffectDto.text_key, StringComparison.InvariantCultureIgnoreCase));
+                itemEffect.Name = name == null || string.IsNullOrWhiteSpace(name.eng)
+                    ? itemEffectDto.NAME
+                    : name.eng;
+                yield return itemEffect;
+            }
+        }
+
+        public IEnumerable<GameTempo> LoadGameTempos()
+        {
+            var dto = Deserialize<ConstantInfoDto>("xml/constant_info.x7");
+
+            foreach (var gameTempoDto in dto.GAMEINFOLIST)
+            {
+                var tempo = new GameTempo
+                {
+                    Name = gameTempoDto.TEMPVALUE.value
+                };
+
+                var values = gameTempoDto.GAMETEPMO_COMMON_TOTAL_VALUE;
+                tempo.ActorDefaultHPMax = float.Parse(values.GAMETEMPO_actor_default_hp_max, CultureInfo.InvariantCulture);
+                tempo.ActorDefaultMPMax = float.Parse(values.GAMETEMPO_actor_default_mp_max, CultureInfo.InvariantCulture);
+                tempo.ActorDefaultMoveSpeed = values.GAMETEMPO_fastrun_required_mp;
+
+                yield return tempo;
+            }
+        }
+
+        public IEnumerable<TaskInfo> LoadTasks()
+        {
+            var dto = Deserialize<TaskListDto>("xml/_eu_task_list.x7");
+
+            foreach (var task in ReadTasks(dto.compulsory_task, 1))
+                yield return task;
+
+            foreach (var task in ReadTasks(dto.weekly_task, 2))
+                yield return task;
+        }
+
+        private static IEnumerable<TaskInfo> ReadTasks(TaskBaseSettingDto[] baseSettings, byte type)
+        {
+            if (baseSettings == null)
+                yield break;
+
+            foreach (var baseSetting in baseSettings)
+            {
+                if (baseSetting.level_setting == null)
+                    continue;
+
+                foreach (var levelSetting in baseSetting.level_setting)
+                {
+                    yield return new TaskInfo
+                    {
+                        Id = levelSetting.id,
+                        Type = type,
+                        Level = levelSetting.level,
+                        Chance = levelSetting.chance_value,
+                        AddChance = levelSetting.add_chance_value,
+                        AddChanceLimitLevel = levelSetting.add_chan_limit_lv,
+                        Goal = ParseValue<ushort>(levelSetting.complet_condition?.repetetion?.value),
+                        Reward = ParseValue<uint>(levelSetting.reward?.pen?.value),
+                        MinLevel = ParseValue<byte>(levelSetting.select_condition?.min_level?.value),
+                        MaxLevel = ParseValue<byte>(levelSetting.select_condition?.max_level?.value),
+                        Checker = levelSetting.complet_condition?.checker_type?.value ?? "",
+                        CheckerData = levelSetting.complet_condition?.checker_type?.data ?? "",
+                        Mode = baseSetting.mode_type ?? ""
+                    };
+                }
+            }
+        }
+
+        private static T ParseValue<T>(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return default(T);
+
+            return (T)Convert.ChangeType(value, typeof(T), CultureInfo.InvariantCulture);
+        }
+        #region GmSupportItems
+
+        public IEnumerable<ItemNumber> LoadGmSupportItems()
+        {
+            var path = Path.Combine(ResourcePath, Path.Combine("xml", "gm_support_item.x7"));
+            if (!File.Exists(path))
+                yield break;
+
+            var dto = Deserialize<GmSupportItemDto>("xml/gm_support_item.x7");
+
+            if (dto.item == null)
+                yield break;
+
+            foreach (var itemDto in dto.item)
+                yield return new ItemNumber(itemDto.category, itemDto.sub_category, itemDto.number);
+        }
+
+        #endregion
+
+        #region DefaultItems
+
+        public IEnumerable<DefaultItem> LoadDefaultItems()
+        {
+            var dto = Deserialize<DefaultItemDto>("xml/default_item.x7");
+
+            foreach (var itemDto in dto.male.item)
+            {
+                var item = new DefaultItem
+                {
+                    ItemNumber = new ItemNumber(itemDto.category, itemDto.sub_category, itemDto.number),
+                    Gender = CharacterGender.Male,
+                    //Slot = (byte) ParseDefaultItemSlot(itemDto.Value),
+                    Variation = itemDto.variation
+                };
+                yield return item;
+            }
+            foreach (var itemDto in dto.female.item)
+            {
+                var item = new DefaultItem
+                {
+                    ItemNumber = new ItemNumber(itemDto.category, itemDto.sub_category, itemDto.number),
+                    Gender = CharacterGender.Female,
+                    //Slot = (byte) ParseDefaultItemSlot(itemDto.Value),
+                    Variation = itemDto.variation
+                };
+                yield return item;
+            }
+        }
+
+        //private static CostumeSlot ParseDefaultItemSlot(string slot)
+        //{
+        //    Func<string, bool> equals = str => slot.Equals(str, StringComparison.InvariantCultureIgnoreCase);
+
+        //    if (equals("hair"))
+        //        return CostumeSlot.Hair;
+
+        //    if (equals("face"))
+        //        return CostumeSlot.Face;
+
+        //    if (equals("coat"))
+        //        return CostumeSlot.Shirt;
+
+        //    if (equals("pants"))
+        //        return CostumeSlot.Pants;
+
+        //    if (equals("gloves"))
+        //        return CostumeSlot.Gloves;
+
+        //    if (equals("shoes"))
+        //        return CostumeSlot.Shoes;
+
+        //    throw new Exception("Invalid slot " + slot);
+        //}
+
+        #endregion
+
+        #region Items
+
+        public IEnumerable<ItemInfo> LoadItems()
+        {
+            var dto = Deserialize<ItemInfoDto>("xml/iteminfo.x7");
+            var stringTable = Deserialize<StringTableDto>("language/xml/iteminfo_string_table.xml");
+
+            foreach (var categoryDto in dto.category)
+            {
+                foreach (var subCategoryDto in categoryDto.sub_category)
+                {
+                    foreach (var itemDto in subCategoryDto.item)
+                    {
+                        var id = new ItemNumber(categoryDto.id, subCategoryDto.id, itemDto.number);
+                        ItemInfo item;
+
+                        switch (id.Category)
+                        {
+                            case ItemCategory.Skill:
+                                item = LoadAction(id, itemDto);
+                                break;
+
+                            case ItemCategory.Weapon:
+                                item = LoadWeapon(id, itemDto);
+                                break;
+
+                            default:
+                                item = new ItemInfo();
+                                break;
+                        }
+
+                        item.ItemNumber = id;
+                        item.Level = itemDto.@base.base_info.require_level;
+                        item.MasterLevel = itemDto.@base.base_info.require_master;
+                        item.Gender = ParseGender(itemDto.SEX);
+                        item.Image = itemDto.client.icon.image;
+
+                        if (itemDto.@base.license != null)
+                            item.License = ParseItemLicense(itemDto.@base.license.require);
+
+                        var name = stringTable.@string.FirstOrDefault(s => s.key.Equals(itemDto.@base.base_info.name_key, StringComparison.InvariantCultureIgnoreCase));
+                        if (string.IsNullOrWhiteSpace(name?.eng))
+                        {
+                            Logger.Warn($"Missing english translation for {(name != null ? itemDto.@base.base_info.name_key : id.ToString())}");
+                            item.Name = name != null ? name.key : itemDto.NAME;
+                        }
+                        else
+                            item.Name = name.eng;
+
+                        yield return item;
+                    }
+                }
+            }
+        }
+
+        private static ItemLicense ParseItemLicense(string license)
+        {
+            Func<string, bool> equals = str => license.Equals(str, StringComparison.InvariantCultureIgnoreCase);
+
+            if (equals("license_none"))
+                return ItemLicense.None;
+
+            if (equals("LICENSE_CHECK_NONE"))
+                return ItemLicense.None;
+
+            if (equals("LICENSE_PLASMA_SWORD"))
+                return ItemLicense.PlasmaSword;
+
+            if (equals("license_counter_sword"))
+                return ItemLicense.CounterSword;
+
+            if (equals("LICENSE_STORM_BAT"))
+                return ItemLicense.StormBat;
+
+            if (equals("LICENSE_ASSASSIN_CLAW"))
+                return ItemLicense.None; // ToDo
+
+            if (equals("LICENSE_SUBMACHINE_GUN"))
+                return ItemLicense.SubmachineGun;
+
+            if (equals("license_revolver"))
+                return ItemLicense.Revolver;
+
+            if (equals("license_semi_rifle"))
+                return ItemLicense.SemiRifle;
+
+            if (equals("LICENSE_SMG3"))
+                return ItemLicense.None; // ToDo
+
+            if (equals("license_HAND_GUN"))
+                return ItemLicense.None; // ToDo
+
+            if (equals("LICENSE_SMG4"))
+                return ItemLicense.None; // ToDo
+
+            if (equals("LICENSE_HEAVYMACHINE_GUN"))
+                return ItemLicense.HeavymachineGun;
+
+            if (equals("LICENSE_GAUSS_RIFLE"))
+                return ItemLicense.GaussRifle;
+
+            if (equals("license_rail_gun"))
+                return ItemLicense.RailGun;
+
+            if (equals("license_cannonade"))
+                return ItemLicense.Cannonade;
+
+            if (equals("LICENSE_CENTRYGUN"))
+                return ItemLicense.Sentrygun;
+
+            if (equals("license_centi_force"))
+                return ItemLicense.SentiForce;
+
+            if (equals("LICENSE_SENTINEL"))
+                return ItemLicense.SentiNel;
+
+            if (equals("license_mine_gun"))
+                return ItemLicense.MineGun;
+
+            if (equals("LICENSE_MIND_ENERGY"))
+                return ItemLicense.MindEnergy;
+
+            if (equals("license_mind_shock"))
+                return ItemLicense.MindShock;
+
+            // SKILLS
+
+            if (equals("LICENSE_ANCHORING"))
+                return ItemLicense.Anchoring;
+
+            if (equals("LICENSE_FLYING"))
+                return ItemLicense.Flying;
+
+            if (equals("LICENSE_INVISIBLE"))
+                return ItemLicense.Invisible;
+
+            if (equals("license_detect"))
+                return ItemLicense.Detect;
+
+            if (equals("LICENSE_SHIELD"))
+                return ItemLicense.Shield;
+
+            if (equals("LICENSE_BLOCK"))
+                return ItemLicense.Block;
+
+            if (equals("LICENSE_BIND"))
+                return ItemLicense.Bind;
+
+            if (equals("LICENSE_METALLIC"))
+                return ItemLicense.Metallic;
+
+            throw new Exception("Invalid license " + license);
+        }
+
+        private static Gender ParseGender(string gender)
+        {
+            Func<string, bool> equals = str => gender.Equals(str, StringComparison.InvariantCultureIgnoreCase);
+
+            if (equals("all"))
+                return Gender.None;
+
+            if (equals("woman"))
+                return Gender.Female;
+
+            if (equals("man"))
+                return Gender.Male;
+
+            throw new Exception("Invalid gender " + gender);
+        }
+
+        private static ItemInfo LoadAction(ItemNumber id, ItemInfoItemDto itemDto)
+        {
+            if (itemDto.action == null)
+            {
+                Logger.Warn($"Missing action for item {id}");
+                return new ItemInfoAction();
+            }
+
+            var item = new ItemInfoAction
+            {
+                RequiredMP = float.Parse(itemDto.action.ability.required_mp, CultureInfo.InvariantCulture),
+                DecrementMP = float.Parse(itemDto.action.ability.decrement_mp, CultureInfo.InvariantCulture),
+                DecrementMPDelay = float.Parse(itemDto.action.ability.decrement_mp_delay, CultureInfo.InvariantCulture)
+            };
+
+            if (itemDto.action.@float != null)
+                item.ValuesF = itemDto.action.@float.Select(f => float.Parse(f.value.Replace("f", ""), CultureInfo.InvariantCulture)).ToList();
+
+            if (itemDto.action.integer != null)
+                item.Values = itemDto.action.integer.Select(i => i.value).ToList();
+
+            return item;
+        }
+
+        private static ItemInfo LoadWeapon(ItemNumber id, ItemInfoItemDto itemDto)
+        {
+            if (itemDto.weapon == null)
+            {
+                Logger.Warn($"Missing weapon for item {id}");
+                return new ItemInfoWeapon();
+            }
+
+            var ability = itemDto.weapon.ability;
+            var item = new ItemInfoWeapon
+            {
+                Type = ability.type,
+                RateOfFire = float.Parse(ability.rate_of_fire, CultureInfo.InvariantCulture),
+                Power = float.Parse(ability.power, CultureInfo.InvariantCulture),
+                MoveSpeedRate = float.Parse(ability.move_speed_rate, CultureInfo.InvariantCulture),
+                AttackMoveSpeedRate = float.Parse(ability.attack_move_speed_rate, CultureInfo.InvariantCulture),
+                MagazineCapacity = ability.magazine_capacity,
+                CrackedMagazineCapacity = ability.cracked_magazine_capacity,
+                MaxAmmo = ability.max_ammo,
+                Accuracy = float.Parse(ability.accuracy, CultureInfo.InvariantCulture),
+                Range = string.IsNullOrWhiteSpace(ability.range) ? 0 : float.Parse(ability.range, CultureInfo.InvariantCulture),
+                SupportSniperMode = ability.support_sniper_mode > 0,
+                SniperModeFov = ability.sniper_mode_fov > 0,
+                AutoTargetDistance = ability.auto_target_distance == null ? 0 : float.Parse(ability.auto_target_distance, CultureInfo.InvariantCulture)
+            };
+
+            if (itemDto.weapon.@float != null)
+                item.ValuesF = itemDto.weapon.@float.Select(f => float.Parse(f.value.Replace("f", ""), CultureInfo.InvariantCulture)).ToList();
+
+            if (itemDto.weapon.integer != null)
+                item.Values = itemDto.weapon.integer.Select(i => i.value).ToList();
+
+            return item;
+        }
+
+        #endregion
+
+        public IEnumerable<ItemRewardItemDto> LoadItemRewards()
+        {
+            try
+            {
+                var dto = Deserialize<ItemRewardDto>("xml/itembag.xml");
+                return dto.item ?? new ItemRewardItemDto[0];
+            }
+            catch
+            {
+                return new ItemRewardItemDto[0];
+            }
+        }
+
+        private T Deserialize<T>(string fileName)
+        {
+            var serializer = new XmlSerializer(typeof(T));
+
+            var path = Path.Combine(ResourcePath, fileName.Replace('/', Path.DirectorySeparatorChar));
+            using (var r = new StreamReader(path))
+                return (T)serializer.Deserialize(r);
+        }
+    }
+}

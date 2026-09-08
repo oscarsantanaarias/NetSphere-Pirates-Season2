@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Netsphere.Resource</RootNamespace>
+    <AssemblyName>Netsphere.Resource</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="BlubLib"><HintPath>..\..\libs\BlubLib7\BlubLib.dll</HintPath></Reference>
+    <Reference Include="SharpLzo"><HintPath>..\..\libs\SharpLzo.dll</HintPath></Reference>
+    <Reference Include="SlimMath"><HintPath>..\..\libs\SlimMath.dll</HintPath></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="miniLzo_x64.dll" Condition="Exists('miniLzo_x64.dll')"><CopyToOutputDirectory>Always</CopyToOutputDirectory></Content>
+    <Content Include="miniLzo_x86.dll" Condition="Exists('miniLzo_x86.dll')"><CopyToOutputDirectory>Always</CopyToOutputDirectory></Content>
+    <None Include="liblzo.so" Condition="Exists('liblzo.so')"><CopyToOutputDirectory>Always</CopyToOutputDirectory></None>
+  </ItemGroup>
+</Project>

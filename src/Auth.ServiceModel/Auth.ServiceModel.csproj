@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Auth.ServiceModel</RootNamespace>
+    <AssemblyName>Auth.ServiceModel</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="BlubLib"><HintPath>..\..\libs\BlubLib7\BlubLib.dll</HintPath></Reference>
+    <Reference Include="BlubLib.DotNetty.SimpleRmi"><HintPath>..\..\libs\BlubLib7\BlubLib.DotNetty.SimpleRmi.dll</HintPath></Reference>
+    <Reference Include="BlubLib.Serialization"><HintPath>..\..\libs\BlubLib7\BlubLib.Serialization.dll</HintPath></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ProudNet\ProudNet.csproj" />
+  </ItemGroup>
+</Project>
