@@ -6,5 +6,20 @@
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <NoWarn>$(NoWarn);NU1701;NU1603;MSB3277;CS1591</NoWarn>
     <AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>
+    <Configurations>Debug;Release;Release_1148;Release_1162</Configurations>
+  </PropertyGroup>
+
+  <!--
+    Client-version switch. Pick "Release_1148" or "Release_1162" in the
+    Configuration dropdown (same idea as Santana's "LatestOld") to build
+    against that specific S4Client build. Plain "Release" keeps building
+    for 1162 so existing scripts/paths don't break.
+    Version-specific code should be wrapped in #if CLIENT_1148 / CLIENT_1162.
+  -->
+  <PropertyGroup Condition="'$(Configuration)'=='Release_1148'">
+    <DefineConstants>$(DefineConstants);CLIENT_1148</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release_1162' Or '$(Configuration)'=='Release'">
+    <DefineConstants>$(DefineConstants);CLIENT_1162</DefineConstants>
   </PropertyGroup>
 </Project>

@@ -122,6 +122,7 @@ namespace Netsphere.Network.Message.Game
             Register<CDeleteCharacterReqMessage>(GameOpCode.CDeleteCharacterReq);
             Register<CLoginReqMessage>(GameOpCode.CLoginReq);
             Register<CQuickStartReqMessage>(GameOpCode.CQuickStartReq);
+            Register<CQuickJoinReqMessage>(GameOpCode.CQuickJoinReq);
             Register<CMakeRoomReqMessage>(GameOpCode.CMakeRoomReq);
             Register<CCreateNickReqMessage>(GameOpCode.CCreateNickReq);
             Register<CCheckNickReqMessage>(GameOpCode.CCheckNickReq);

@@ -130,6 +130,7 @@
         CShoppingBasketDeleteReq = 50057,
         CRandomShopUpdateCheckReq = 50058,
         CRandomShopGetNiceItemReq = 50060,
+        CQuickJoinReq = 50064,
 
         #endregion
 

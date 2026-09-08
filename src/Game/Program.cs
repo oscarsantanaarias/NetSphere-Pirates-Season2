@@ -115,6 +115,10 @@ namespace Netsphere
         {
             Logger.Info("Closing...");
 
+            // The periodic save only runs once a minute - without this, anything
+            // bought/changed since the last tick is lost on shutdown/restart.
+            GameServer.Instance.SaveAllPlayers();
+
             ChatServer.Instance.Dispose();
             RelayServer.Instance.Dispose();
             GameServer.Instance.Dispose();

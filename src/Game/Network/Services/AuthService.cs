@@ -26,7 +26,11 @@ namespace Netsphere.Network.Services
     internal class AuthService : ProudMessageHandler
     {
         // Set Client Version here
+#if CLIENT_1148
         private static readonly Version s_version = new Version(0, 8, 32, 31343);
+#else
+        private static readonly Version s_version = new Version(0, 8, 32, 45069);
+#endif
         // ReSharper disable once InconsistentNaming
         private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
 

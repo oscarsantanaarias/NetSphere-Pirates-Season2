@@ -1,4 +1,5 @@
 ﻿using BlubLib.Serialization;
+using Netsphere.Network.Serializers;
 using ProudNet.Serialization.Serializers;
 
 namespace Netsphere.Network.Data.Game
@@ -15,7 +16,14 @@ namespace Netsphere.Network.Data.Game
         [BlubMember(2)]
         public ushort PlayerLimit { get; set; }
 
+#if CLIENT_1162
+        // 1162 client reads 4 raw bytes here (see FUN_00b6f180), not a 1-byte
+        // bool - otherwise every field after this one (Name, Rank,
+        // Description, levels) shifts by 3 bytes.
+        [BlubMember(3, typeof(IntBooleanSerializer))]
+#else
         [BlubMember(3)]
+#endif
         public bool IsClanChannel { get; set; }
 
         [BlubMember(4, typeof(StringSerializer))]
@@ -36,11 +44,20 @@ namespace Netsphere.Network.Data.Game
         [BlubMember(9)]
         public uint MaxLevel { get; set; }
 
+#if CLIENT_1162
+        // 1162 client reads these as floats (see FUN_00b72da0), not uints.
+        [BlubMember(10)]
+        public float MinRankedLevel { get; set; }
+
+        [BlubMember(11)]
+        public float MaxRankedLevel { get; set; }
+#else
         [BlubMember(10)]
         public uint MinRankedLevel { get; set; }
 
         [BlubMember(11)]
         public uint MaxRankedLevel { get; set; }
+#endif
 
         public ChannelInfoDto()
         {

@@ -318,6 +318,34 @@ namespace Netsphere.Network
             }
         }
 
+        internal void SaveAllPlayers()
+        {
+            Logger.Info("Saving players...");
+
+            int playerson = 0;
+
+            foreach (var plr in PlayerManager.Where(plr => plr.IsLoggedIn()))
+            {
+                try
+                {
+                    plr.Save();
+                    playerson++;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error()
+                        .Account(plr)
+                        .Exception(ex)
+                        .Message("Failed to save player")
+                        .Write();
+                }
+            }
+
+            Logger.Info()
+                .Message($"Saving players completed, saving player amount, which is {playerson}") //player counter
+                .Write();
+        }
+
         private void Worker(TimeSpan delta)
         {
             ChannelManager.Update(delta);
@@ -329,32 +357,7 @@ namespace Netsphere.Network
             if (_saveTimer >= Config.Instance.SaveInterval)
             {
                 _saveTimer = TimeSpan.Zero;
-
-                Logger.Info("Saving players...");
-
-                int playerson = 0;
-
-                foreach (var plr in PlayerManager.Where(plr => plr.IsLoggedIn()))
-                {
-                    try
-                    {
-                        plr.Save();
-                        playerson++;
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Error()
-                            .Account(plr)
-                            .Exception(ex)
-                            .Message("Failed to save player")
-                            .Write();
-                    }
-                }
-                 
-                Logger.Info()
-                    .Message($"Saving players completed, saving player amount, which is {playerson}") //player counter
-                    .Write();
-
+                SaveAllPlayers();
         }
 
             _mailBoxCheckTimer = _mailBoxCheckTimer.Add(delta);
@@ -390,8 +393,13 @@ namespace Netsphere.Network
                 .Member(dest => dest.Color, src => src.Color)
                 .Member(dest => dest.MinLevel, src => (uint)0)
                 .Member(dest => dest.MaxLevel, src => (uint)127)
+#if CLIENT_1162
+                .Member(dest => dest.MinRankedLevel, src => (float)0)
+                .Member(dest => dest.MaxRankedLevel, src => (float)999);
+#else
                 .Member(dest => dest.MinRankedLevel, src => (uint)0)
                 .Member(dest => dest.MaxRankedLevel, src => (uint)999);
+#endif
 
             Mapper.Register<PlayerItem, ItemDto>()
                 .Member(dest => dest.Refund, src => src.CalculateRefund())

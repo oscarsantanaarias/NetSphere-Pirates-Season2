@@ -66,6 +66,15 @@ namespace Netsphere.Network.Message.Game
         public byte GameRule { get; set; }
     }
 
+    // Opcode 50064. Client sends a single 4-byte GameRule value (see
+    // FUN_00aeceb0 in the 1162 client, PTR_u_CQuickJoinReq).
+    [BlubContract]
+    public class CQuickJoinReqMessage : IGameMessage
+    {
+        [BlubMember(0)]
+        public global::Netsphere.GameRule GameRule { get; set; }
+    }
+
     [BlubContract]
     public class CMakeRoomReqMessage : IGameMessage
     {
